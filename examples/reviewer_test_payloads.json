@@ -1,0 +1,176 @@
+{
+  "basic_review_payload": {
+    "pr_info": {
+      "number": 123,
+      "repo_owner": "your-username",
+      "repo_name": "your-repository",
+      "installation_id": 12345
+    },
+    "analysis": {
+      "quality_score": 7.5,
+      "summary": "This pull request introduces new user authentication features with good overall structure, but there are some security and performance concerns that should be addressed.",
+      "issues": [
+        {
+          "title": "SQL Injection Vulnerability",
+          "description": "The user input is directly concatenated into the SQL query without proper sanitization.",
+          "severity": "critical",
+          "category": "security",
+          "file": "src/auth.py",
+          "line": 45,
+          "suggestion": "Use parameterized queries or an ORM to prevent SQL injection attacks.",
+          "code_example": "cursor.execute('SELECT * FROM users WHERE username = %s', (username,))",
+          "references": "https://owasp.org/www-community/attacks/SQL_Injection"
+        },
+        {
+          "title": "Missing Input Validation",
+          "description": "Email validation is missing for user registration endpoint.",
+          "severity": "high",
+          "category": "security",
+          "file": "src/registration.py",
+          "line": 23,
+          "suggestion": "Add proper email format validation using regex or email validation library.",
+          "code_example": "import re\n\ndef is_valid_email(email):\n    pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$'\n    return re.match(pattern, email) is not None"
+        },
+        {
+          "title": "Inefficient Database Query",
+          "description": "N+1 query problem detected in user profile loading.",
+          "severity": "medium",
+          "category": "performance",
+          "file": "src/profile.py",
+          "line": 67,
+          "suggestion": "Use JOIN queries or eager loading to reduce database round trips.",
+          "code_example": "SELECT u.*, p.* FROM users u JOIN profiles p ON u.id = p.user_id WHERE u.id IN (...)"
+        }
+      ],
+      "recommendations": [
+        {
+          "title": "Add Unit Tests",
+          "description": "The authentication module lacks comprehensive unit tests.",
+          "category": "testing",
+          "priority": "high",
+          "file": "src/auth.py",
+          "line": 1,
+          "benefits": "Improves code reliability and makes refactoring safer.",
+          "example": "@pytest.fixture\ndef auth_client():\n    return AuthClient(test_config)"
+        },
+        {
+          "title": "Implement Rate Limiting",
+          "description": "Add rate limiting to login endpoint to prevent brute force attacks.",
+          "category": "security",
+          "priority": "medium",
+          "file": "src/auth.py",
+          "line": 78,
+          "benefits": "Prevents abuse and improves system security.",
+          "example": "from flask_limiter import Limiter\n\n@app.route('/login', methods=['POST'])\n@limiter.limit('5 per minute')\ndef login():"
+        },
+        {
+          "title": "Add API Documentation",
+          "description": "Consider adding Swagger/OpenAPI documentation for the new endpoints.",
+          "category": "documentation",
+          "priority": "low",
+          "file": "src/main.py",
+          "line": 15,
+          "benefits": "Improves API usability and developer experience.",
+          "example": "from flask_restx import Api, Resource\n\napi = Api(app, doc='/docs/')"
+        }
+      ]
+    }
+  },
+
+  "excellent_code_payload": {
+    "pr_info": {
+      "number": 456,
+      "repo_owner": "your-username",
+      "repo_name": "your-repository",
+      "installation_id": 12345
+    },
+    "analysis": {
+      "quality_score": 9.2,
+      "summary": "Excellent pull request! Clean code structure, comprehensive tests, and good documentation. Only minor suggestions for further improvement.",
+      "issues": [],
+      "recommendations": [
+        {
+          "title": "Consider Caching Optimization",
+          "description": "The API responses could benefit from Redis caching for frequently accessed data.",
+          "category": "performance",
+          "priority": "low",
+          "file": "src/api.py",
+          "line": 34,
+          "benefits": "Reduces database load and improves response times.",
+          "example": "from redis import Redis\n\n@cache.memoize(timeout=300)\ndef get_user_data(user_id):"
+        }
+      ]
+    }
+  },
+
+  "problematic_code_payload": {
+    "pr_info": {
+      "number": 789,
+      "repo_owner": "your-username", 
+      "repo_name": "your-repository",
+      "installation_id": 12345
+    },
+    "analysis": {
+      "quality_score": 3.5,
+      "summary": "This pull request has multiple critical issues that need immediate attention before it can be merged. Security vulnerabilities and performance problems must be resolved.",
+      "issues": [
+        {
+          "title": "Hardcoded API Keys",
+          "description": "API keys and secrets are hardcoded in the source code.",
+          "severity": "critical",
+          "category": "security",
+          "file": "src/config.py",
+          "line": 12,
+          "suggestion": "Move sensitive information to environment variables or secure configuration files.",
+          "code_example": "API_KEY = os.getenv('API_KEY')",
+          "references": "https://12factor.net/config"
+        },
+        {
+          "title": "Memory Leak in Loop",
+          "description": "Potential memory leak due to unclosed file handles in loop.",
+          "severity": "high",
+          "category": "performance",
+          "file": "src/processor.py",
+          "line": 89,
+          "suggestion": "Use context managers (with statement) or ensure proper resource cleanup.",
+          "code_example": "with open(filename, 'r') as f:\n    content = f.read()"
+        },
+        {
+          "title": "Broad Exception Handling",
+          "description": "Catching all exceptions with bare except clause masks important errors.",
+          "severity": "high",
+          "category": "best_practices",
+          "file": "src/main.py", 
+          "line": 156,
+          "suggestion": "Catch specific exceptions and handle them appropriately.",
+          "code_example": "try:\n    result = risky_operation()\nexcept ValueError as e:\n    logger.error(f'Invalid value: {e}')\nexcept ConnectionError as e:\n    logger.error(f'Connection failed: {e}')"
+        }
+      ],
+      "recommendations": [
+        {
+          "title": "Add Comprehensive Logging",
+          "description": "The code lacks proper logging for debugging and monitoring.",
+          "category": "maintainability",
+          "priority": "high",
+          "file": "src/main.py",
+          "line": 1,
+          "benefits": "Improves debugging capabilities and production monitoring.",
+          "example": "import logging\n\nlogger = logging.getLogger(__name__)\nlogger.info('Processing started')"
+        }
+      ]
+    }
+  },
+
+  "minimal_payload": {
+    "pr_info": {
+      "number": 101,
+      "repo_owner": "your-username",
+      "repo_name": "your-repository",
+      "installation_id": 12345
+    },
+    "analysis": {
+      "quality_score": 8.0,
+      "summary": "Minor documentation updates with good practices."
+    }
+  }
+}

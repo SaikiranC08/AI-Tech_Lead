@@ -1,7 +1,7 @@
-crewai[tools]==0.76.0
+crewai[tools]==0.193.2
 python-dotenv==1.0.0
 google-generativeai==0.8.3
-openai==1.52.0
+openai>=1.68.2
 PyGithub==2.4.0
 Flask==3.0.3
 pytest==8.3.3
@@ -9,6 +9,7 @@ pytest-cov==5.0.0
 requests==2.32.3
 pydantic==2.9.2
 pydantic-settings==2.5.2
-cryptography==43.0.1
-Werkzeug==3.0.4
+cryptography==44.0.1
+Werkzeug==3.0.6
 gunicorn==23.0.0
+PyJWT==2.9.0

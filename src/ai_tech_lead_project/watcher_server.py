@@ -8,9 +8,11 @@ import hmac
 import hashlib
 import json
 import logging
+import requests
 from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from crew import AITechLeadCrew
+from result_adapter import CrewAIResultAdapter
 
 # Load environment variables
 load_dotenv()
@@ -24,6 +26,13 @@ app = Flask(__name__)
 # GitHub App configuration
 WEBHOOK_SECRET = os.getenv('GITHUB_WEBHOOK_SECRET')
 GITHUB_APP_ID = os.getenv('GITHUB_APP_ID')
+
+# Reviewer Server configuration
+REVIEWER_SERVER_URL = os.getenv('REVIEWER_SERVER_URL', 'http://localhost:5006')
+USE_REVIEWER_SERVER = os.getenv('USE_REVIEWER_SERVER', 'true').lower() == 'true'
+
+# Initialize result adapter
+result_adapter = CrewAIResultAdapter()
 
 def verify_github_signature(payload_body, signature):
     """Verify GitHub webhook signature for security."""
@@ -44,6 +53,57 @@ def verify_github_signature(payload_body, signature):
     
     # Compare signatures securely
     return hmac.compare_digest(signature, expected_signature)
+
+def send_to_reviewer_server(crew_results):
+    """Send CrewAI results to the Reviewer Server for GitHub review posting."""
+    if not USE_REVIEWER_SERVER:
+        logger.info("Reviewer Server integration disabled")
+        return {'success': False, 'reason': 'disabled'}
+
+    try:
+        # Transform CrewAI results to Reviewer Server format
+        reviewer_payload = result_adapter.transform_crew_results(crew_results)
+
+        # Log the outgoing payload (truncate to avoid huge logs)
+        try:
+            pretty_payload = json.dumps(reviewer_payload)
+            logger.info(f"Posting to Reviewer Server at {REVIEWER_SERVER_URL}/review; payload (truncated): {pretty_payload[:2000]}")
+        except Exception:
+            logger.info("Posting to Reviewer Server (payload could not be serialized for logging)")
+
+        # Send to Reviewer Server
+        response = requests.post(
+            f"{REVIEWER_SERVER_URL}/review",
+            json=reviewer_payload,
+            headers={'Content-Type': 'application/json'},
+            timeout=30
+        )
+
+        logger.info(f"Reviewer Server responded: {response.status_code} - {response.text[:2000]}")
+
+        # Treat any 2xx as success
+        if response.ok:
+            try:
+                result = response.json()
+            except ValueError:
+                result = {'raw_text': response.text}
+            logger.info(f"Successfully sent review to Reviewer Server: {result.get('review_id') or result.get('review_id')}")
+            return {'success': True, 'result': result}
+        else:
+            error_msg = f"Reviewer Server error: {response.status_code} - {response.text}"
+            logger.error(error_msg)
+            return {'success': False, 'error': error_msg}
+
+    except requests.exceptions.RequestException as e:
+        # Provide more details about connection issues
+        logger.exception(f"Failed to connect to Reviewer Server at {REVIEWER_SERVER_URL}: {str(e)}")
+        error_msg = f"Failed to connect to Reviewer Server: {str(e)}"
+        return {'success': False, 'error': error_msg}
+    except Exception as e:
+        logger.exception(f"Error sending to Reviewer Server: {str(e)}")
+        error_msg = f"Error sending to Reviewer Server: {str(e)}"
+        return {'success': False, 'error': error_msg}
+
 
 def extract_pr_info(payload):
     """Extract relevant PR information from GitHub webhook payload."""
@@ -106,11 +166,29 @@ def webhook():
         result = crew.kickoff(inputs=pr_info)
         
         logger.info(f"CrewAI workflow completed for PR #{pr_info['number']}")
-        return jsonify({
+        
+        # Send results to Reviewer Server for GitHub review posting
+        reviewer_result = send_to_reviewer_server(result)
+        
+        # Prepare response based on both CrewAI and Reviewer Server results
+        response_data = {
             'message': 'PR analysis completed successfully',
             'pr_number': pr_info['number'],
-            'status': 'success'
-        }), 200
+            'status': 'success',
+            'crew_status': result.get('status', 'unknown'),
+            'reviewer_server': {
+                'enabled': USE_REVIEWER_SERVER,
+                'success': reviewer_result.get('success', False)
+            }
+        }
+        
+        # Add reviewer server details if successful
+        if reviewer_result.get('success'):
+            response_data['reviewer_server']['review_id'] = reviewer_result.get('result', {}).get('review_id')
+        elif reviewer_result.get('error'):
+            response_data['reviewer_server']['error'] = reviewer_result.get('error')
+            
+        return jsonify(response_data), 200
         
     except Exception as e:
         logger.error(f"Error processing PR #{pr_info['number']}: {str(e)}")
@@ -151,8 +229,8 @@ if __name__ == '__main__':
         logger.error(f"Missing required environment variables: {missing_vars}")
         exit(1)
     
-    # Get port from environment or default to 5000
-    port = int(os.getenv('PORT', 5000))
+    # Get port from environment or default to 5001 (avoiding macOS AirPlay)
+    port = int(os.getenv('PORT', 5001))
     debug = os.getenv('FLASK_ENV') == 'development'
     
     logger.info(f"Starting AI Tech Lead Watcher Server on port {port}")
