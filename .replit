@@ -34,10 +34,6 @@ outputType = "webview"
 localPort = 5000
 externalPort = 80
 
-[[ports]]
-localPort = 46841
-externalPort = 3000
-
 [deployment]
 deploymentTarget = "vm"
 run = ["gunicorn", "--bind=0.0.0.0:5000", "--reuse-port", "--timeout=300", "--workers=2", "src.ai_tech_lead_project.watcher_server:app"]
