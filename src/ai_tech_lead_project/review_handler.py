@@ -145,93 +145,198 @@ class ReviewHandler:
         comments = []
         
         # Process issues that have file/line information
-        for issue in issues:
-            if issue.get('file') and issue.get('line'):
-                comment = self._format_issue_comment(issue)
-                if comment:
-                    comments.append(comment)
+        if isinstance(issues, list):
+            for i, issue in enumerate(issues):
+                try:
+                    if self._has_valid_location(issue):
+                        comment = self._format_issue_comment(issue)
+                        if comment:
+                            comments.append(comment)
+                except Exception as e:
+                    logger.warning(f"Error processing issue {i}: {str(e)}")
+                    continue
         
         # Process recommendations that have file/line information
-        for rec in recommendations:
-            if rec.get('file') and rec.get('line'):
-                comment = self._format_recommendation_comment(rec)
-                if comment:
-                    comments.append(comment)
+        if isinstance(recommendations, list):
+            for i, rec in enumerate(recommendations):
+                try:
+                    if self._has_valid_location(rec):
+                        comment = self._format_recommendation_comment(rec)
+                        if comment:
+                            comments.append(comment)
+                except Exception as e:
+                    logger.warning(f"Error processing recommendation {i}: {str(e)}")
+                    continue
         
-        # Remove duplicates based on file and line
-        seen = set()
-        unique_comments = []
+        # Remove duplicates and combine comments for same location
+        unique_comments = self._deduplicate_comments(comments)
+        
+        logger.debug(f"Generated {len(unique_comments)} unique line comments")
+        return unique_comments
+    
+    def _has_valid_location(self, item: Dict[str, Any]) -> bool:
+        """Check if an issue or recommendation has valid file/line location."""
+        if not isinstance(item, dict):
+            return False
+            
+        file_path = item.get('file')
+        line_num = item.get('line')
+        
+        # Check file path
+        if not file_path or not isinstance(file_path, str) or not file_path.strip():
+            return False
+            
+        # Check line number
+        try:
+            line_int = int(line_num)
+            return line_int > 0
+        except (ValueError, TypeError):
+            return False
+    
+    def _deduplicate_comments(self, comments: List[Dict]) -> List[Dict]:
+        """Remove duplicate comments and combine multiple comments for same location."""
+        # Group comments by location
+        location_groups = {}
         for comment in comments:
             key = (comment['path'], comment['line'])
-            if key not in seen:
-                seen.add(key)
-                unique_comments.append(comment)
+            if key not in location_groups:
+                location_groups[key] = []
+            location_groups[key].append(comment)
+        
+        # Combine comments for same location
+        unique_comments = []
+        for (path, line), group in location_groups.items():
+            if len(group) == 1:
+                unique_comments.append(group[0])
+            else:
+                # Combine multiple comments for same location
+                combined_body = "\n\n---\n\n".join(comment['body'] for comment in group)
+                unique_comments.append({
+                    'path': path,
+                    'line': line,
+                    'body': combined_body
+                })
         
         return unique_comments
     
     def _format_issue_comment(self, issue: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Format an issue into a line comment."""
         try:
+            # Extract and validate data
             severity = issue.get('severity', 'medium')
             severity_label = self.severity_mapping.get(severity, '🔸 Issue')
             category = issue.get('category', 'general')
             category_emoji = self.category_emojis.get(category, '🔸')
+            title = issue.get('title', 'Code Issue')
             
-            body = f"{severity_label} {category_emoji} **{issue.get('title', 'Code Issue')}**\n\n"
+            # Build comment body
+            body_parts = []
+            body_parts.append(f"{severity_label} {category_emoji} **{title}**")
             
             if issue.get('description'):
-                body += f"{issue['description']}\n\n"
+                desc = str(issue['description']).strip()
+                if desc:
+                    body_parts.append(desc)
             
             if issue.get('suggestion'):
-                body += f"**💡 Suggested Fix:**\n{issue['suggestion']}\n\n"
+                suggestion = str(issue['suggestion']).strip()
+                if suggestion:
+                    body_parts.append(f"**💡 Suggested Fix:**\n{suggestion}")
             
             if issue.get('code_example'):
-                body += f"**Example:**\n```python\n{issue['code_example']}\n```\n\n"
+                code_example = str(issue['code_example']).strip()
+                if code_example:
+                    # Try to detect language from file extension or default to generic
+                    file_ext = issue.get('file', '').split('.')[-1].lower()
+                    lang = 'python' if file_ext == 'py' else file_ext if file_ext in ['js', 'ts', 'java', 'cpp', 'c', 'go', 'rust'] else ''
+                    body_parts.append(f"**Example:**\n```{lang}\n{code_example}\n```")
             
             # Add references if available
             if issue.get('references'):
-                body += f"**📚 References:** {issue['references']}\n"
+                refs = str(issue['references']).strip()
+                if refs:
+                    body_parts.append(f"**📚 References:** {refs}")
+            
+            # Join all parts with double newlines
+            final_body = '\n\n'.join(body_parts)
+            
+            # Validate line number
+            line_num = int(issue['line'])
+            if line_num <= 0:
+                raise ValueError(f"Invalid line number: {line_num}")
+            
+            # Sanitize the comment body
+            final_body = self.sanitize_github_comment(final_body)
             
             return {
-                'path': issue['file'],
-                'line': int(issue['line']),
-                'body': body.strip()
+                'path': str(issue['file']).strip(),
+                'line': line_num,
+                'body': final_body
             }
             
+        except (KeyError, ValueError, TypeError) as e:
+            logger.warning(f"Error formatting issue comment: {str(e)} - Issue data: {issue}")
+            return None
         except Exception as e:
-            logger.error(f"Error formatting issue comment: {str(e)}")
+            logger.error(f"Unexpected error formatting issue comment: {str(e)}")
             return None
     
     def _format_recommendation_comment(self, rec: Dict[str, Any]) -> Optional[Dict[str, str]]:
         """Format a recommendation into a line comment."""
         try:
+            # Extract and validate data
             category = rec.get('category', 'general')
             category_emoji = self.category_emojis.get(category, '💡')
+            title = rec.get('title', 'Code Improvement')
+            priority = rec.get('priority', 'medium')
             
-            body = f"💡 {category_emoji} **Recommendation: {rec.get('title', 'Code Improvement')}**\n\n"
+            # Build comment body
+            body_parts = []
+            
+            # Add priority indicator for high priority items
+            priority_prefix = "⚠️ **High Priority** - " if priority in ['high', 'critical'] else ""
+            body_parts.append(f"{priority_prefix}💡 {category_emoji} **Recommendation: {title}**")
             
             if rec.get('description'):
-                body += f"{rec['description']}\n\n"
+                desc = str(rec['description']).strip()
+                if desc:
+                    body_parts.append(desc)
             
             if rec.get('benefits'):
-                body += f"**✨ Benefits:**\n{rec['benefits']}\n\n"
+                benefits = str(rec['benefits']).strip()
+                if benefits:
+                    body_parts.append(f"**✨ Benefits:**\n{benefits}")
             
             if rec.get('example'):
-                body += f"**Example Implementation:**\n```python\n{rec['example']}\n```\n\n"
+                example = str(rec['example']).strip()
+                if example:
+                    # Try to detect language from file extension or default to generic
+                    file_ext = rec.get('file', '').split('.')[-1].lower()
+                    lang = 'python' if file_ext == 'py' else file_ext if file_ext in ['js', 'ts', 'java', 'cpp', 'c', 'go', 'rust'] else ''
+                    body_parts.append(f"**Example Implementation:**\n```{lang}\n{example}\n```")
             
-            # Add priority if available
-            priority = rec.get('priority', 'medium')
-            if priority in ['high', 'critical']:
-                body = f"⚠️ **High Priority** - " + body
+            # Join all parts with double newlines
+            final_body = '\n\n'.join(body_parts)
+            
+            # Validate line number
+            line_num = int(rec['line'])
+            if line_num <= 0:
+                raise ValueError(f"Invalid line number: {line_num}")
+            
+            # Sanitize the comment body
+            final_body = self.sanitize_github_comment(final_body)
             
             return {
-                'path': rec['file'],
-                'line': int(rec['line']),
-                'body': body.strip()
+                'path': str(rec['file']).strip(),
+                'line': line_num,
+                'body': final_body
             }
             
+        except (KeyError, ValueError, TypeError) as e:
+            logger.warning(f"Error formatting recommendation comment: {str(e)} - Recommendation data: {rec}")
+            return None
         except Exception as e:
-            logger.error(f"Error formatting recommendation comment: {str(e)}")
+            logger.error(f"Unexpected error formatting recommendation comment: {str(e)}")
             return None
     
     def _determine_review_event(self, issues: List[Dict], quality_score: float) -> str:
