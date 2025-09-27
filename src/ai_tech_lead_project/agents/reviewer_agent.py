@@ -1,8 +1,9 @@
+
 """
 AI Tech Lead - Reviewer Agent
 LLM-powered code review agent using Gemini API for comprehensive code analysis.
 """
-
+from dotenv import load_dotenv
 import os
 import json
 import logging
@@ -10,230 +11,72 @@ import requests
 from typing import Dict, Any
 import google.generativeai as genai
 from crewai import Agent, Task
-from dotenv import load_dotenv
+from crewai.tools import BaseTool
+from pydantic import BaseModel, Field, PrivateAttr
+from typing import Type, Any
 
+# Load environment variables
 load_dotenv()
+
 logger = logging.getLogger(__name__)
 
-class CodeReviewTool:
-    """Tool for performing AI-powered code reviews using Gemini API."""
-    
-    def __init__(self):
-        """Initialize the Gemini API client."""
-        self.api_key = os.getenv('GEMINI_API_KEY')
-        if not self.api_key:
-            raise ValueError("GEMINI_API_KEY environment variable is required")
-        
-        genai.configure(api_key=self.api_key)
-        self.model = genai.GenerativeModel('gemini-1.5-pro')
-    
+class CodeReviewSchema(BaseModel):
+    """Input schema for the Code Review Tool."""
+    pr_info: Dict[str, Any] = Field(description="Dictionary containing pull request information.")
+    diff: str = Field(description="The git diff content of the pull request.")
+
+class CodeReviewTool(BaseTool):
+    name: str = "AI Code Reviewer"
+    description: str = "Performs an AI-powered code review on a git diff."
+    args_schema: Type[BaseModel] = CodeReviewSchema
+    api_key: str = Field(default_factory=lambda: os.getenv('GEMINI_API_KEY'))
+    _model: Any = PrivateAttr(default=None)
+
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        if self.api_key:
+            genai.configure(api_key=self.api_key)
+            self._model = genai.GenerativeModel("gemini-1.5-pro")
+
     def get_pr_diff(self, diff_url: str) -> str:
-        """Fetch the PR diff from GitHub."""
+        """Fetches the diff content of a pull request from its diff URL."""
+        if not diff_url:
+            logging.warning("No diff URL provided to get_pr_diff.")
+            return ""
         try:
             response = requests.get(diff_url)
             response.raise_for_status()
             return response.text
-        except Exception as e:
-            logger.error(f"Error fetching PR diff: {e}")
+        except requests.exceptions.RequestException as e:
+            logging.error(f"Error fetching PR diff from {diff_url}: {e}")
             return ""
-    
-    def analyze_code(self, code_diff: str, pr_info: Dict[str, Any]) -> Dict[str, Any]:
-        """Analyze code diff using Gemini API."""
+
+    def _run(self, pr_info: Dict[str, Any], diff: str) -> Dict[str, Any]:
+        """
+        Executes the code review using the Gemini API.
+        If the review fails, it attempts to use the AI to suggest a fix for the error.
+        """
+        if not self._model:
+            return {"error": "GEMINI_API_KEY not found or model not initialized."}
         
-        if not code_diff.strip():
-            return {
-                "style_issues": [],
-                "documentation_issues": [],
-                "potential_bugs": [],
-                "error_handling_issues": [],
-                "summary": "No code changes detected in the diff."
-            }
+        logger.info(f"Performing AI code review on diff (first 200 chars): {diff[:200]}")
         
-        # Enhanced prompt for comprehensive code review
         prompt = f"""
-You are a Senior Software Engineer conducting a thorough code review. Analyze the provided code diff and provide detailed feedback.
+        You are an expert senior software engineer conducting a code review. 
+        Analyze the following git diff and provide a comprehensive review.
 
-**Pull Request Information:**
-- Title: {pr_info.get('title', 'N/A')}
-- Repository: {pr_info.get('repo_name', 'N/A')}
-- Author: {pr_info.get('pr_author', 'N/A')}
+        PR Information:
+        - Title: {pr_info.get('title', 'N/A')}
+        - Author: {pr_info.get('pr_author', 'N/A')}
+        - Repository: {pr_info.get('repo_name', 'N/A')}
+        - Branch: {pr_info.get('head_branch', 'N/A')} → {pr_info.get('base_branch', 'N/A')}
 
-**Code Diff:**
-```diff
-{code_diff}
-```
+        Git Diff:
+        ```
+        {diff}
+        ```
 
-**Instructions:**
-Analyze the code changes and provide feedback in the following areas:
-
-1. **Coding Standards & Style:** Check for PEP8 compliance (Python), naming conventions, code formatting, and consistency with existing codebase patterns.
-
-2. **Documentation & Comments:** Evaluate docstrings, inline comments, and code readability. Identify missing documentation for complex logic.
-
-3. **Potential Bugs & Code Smells:** Look for logical errors, edge cases, race conditions, memory leaks, infinite loops, and anti-patterns.
-
-4. **Error Handling:** Check for proper exception handling, input validation, and graceful error recovery mechanisms.
-
-5. **Security Concerns:** Identify potential security vulnerabilities like SQL injection, XSS, hardcoded secrets, or insecure data handling.
-
-6. **Performance Issues:** Look for inefficient algorithms, unnecessary loops, database query issues, or resource usage problems.
-
-**Output Format:**
-Return your analysis as a valid JSON object with the following structure:
-
-{{
-    "style_issues": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_style_issue",
-            "severity": "low|medium|high",
-            "suggestion": "how_to_fix_it"
-        }}
-    ],
-    "documentation_issues": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_documentation_issue",
-            "severity": "low|medium|high",
-            "suggestion": "how_to_improve_documentation"
-        }}
-    ],
-    "potential_bugs": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_potential_bug",
-            "severity": "low|medium|high|critical",
-            "suggestion": "how_to_fix_the_bug"
-        }}
-    ],
-    "error_handling_issues": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_error_handling_issue",
-            "severity": "low|medium|high",
-            "suggestion": "how_to_improve_error_handling"
-        }}
-    ],
-    "security_concerns": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_security_concern",
-            "severity": "low|medium|high|critical",
-            "suggestion": "how_to_address_security_issue"
-        }}
-    ],
-    "performance_issues": [
-        {{
-            "line": "line_number_or_range",
-            "issue": "description_of_performance_issue",
-            "severity": "low|medium|high",
-            "suggestion": "how_to_optimize_performance"
-        }}
-    ],
-    "positive_aspects": [
-        "list_of_good_practices_or_improvements_found_in_the_code"
-    ],
-    "summary": "overall_assessment_of_the_code_changes"
-}}
-
-Be specific about line numbers when possible and provide actionable suggestions. If no issues are found in a category, return an empty array for that category.
-"""
-
-        try:
-            response = self.model.generate_content(prompt)
-            
-            # Extract JSON from the response
-            response_text = response.text.strip()
-            
-            # Try to find JSON in the response (sometimes the model wraps it in markdown)
-            if '```json' in response_text:
-                json_start = response_text.find('```json') + 7
-                json_end = response_text.find('```', json_start)
-                json_text = response_text[json_start:json_end].strip()
-            elif response_text.startswith('{'):
-                json_text = response_text
-            else:
-                # Fallback: try to extract JSON from the response
-                json_start = response_text.find('{')
-                json_end = response_text.rfind('}') + 1
-                json_text = response_text[json_start:json_end] if json_start >= 0 else response_text
-            
-            # Parse the JSON response
-            analysis_result = json.loads(json_text)
-            
-            # Validate required keys
-            required_keys = ['style_issues', 'documentation_issues', 'potential_bugs', 
-                           'error_handling_issues', 'summary']
-            for key in required_keys:
-                if key not in analysis_result:
-                    analysis_result[key] = [] if key != 'summary' else 'Analysis completed'
-            
-            return analysis_result
-            
-        except json.JSONDecodeError as e:
-            logger.error(f"Failed to parse JSON response from Gemini: {e}")
-            return {
-                "style_issues": [],
-                "documentation_issues": [],
-                "potential_bugs": [],
-                "error_handling_issues": [],
-                "security_concerns": [],
-                "performance_issues": [],
-                "positive_aspects": [],
-                "summary": f"Code review completed but failed to parse detailed results: {str(e)}"
-            }
-        except Exception as e:
-            logger.error(f"Error during code analysis: {e}")
-            return {
-                "style_issues": [],
-                "documentation_issues": [],
-                "potential_bugs": [],
-                "error_handling_issues": [],
-                "security_concerns": [],
-                "performance_issues": [],
-                "positive_aspects": [],
-                "summary": f"Code review failed due to error: {str(e)}"
-            }
-
-def create_reviewer_agent() -> Agent:
-    """Create and configure the Reviewer Agent."""
-    
-    return Agent(
-        role="Senior Code Reviewer",
-        goal="Perform comprehensive code reviews to ensure high code quality, identify potential issues, and suggest improvements",
-        backstory="""You are an experienced Senior Software Engineer with 10+ years of experience 
-        in code review, software architecture, and best practices. You have expertise in multiple 
-        programming languages, with particular strength in Python, JavaScript, and modern development 
-        practices. You're known for providing constructive, actionable feedback that helps developers 
-        improve their skills while maintaining high code quality standards.""",
-        verbose=True,
-        allow_delegation=False,
-        tools=[]  # Tools will be added during task execution
-    )
-
-def create_review_task(agent: Agent, pr_info: Dict[str, Any]) -> Task:
-    """Create a code review task for the Reviewer Agent."""
-    
-    return Task(
-        description=f"""
-        Conduct a comprehensive code review for Pull Request #{pr_info.get('number')} 
-        in repository {pr_info.get('repo_name')}.
-        
-        **Task Details:**
-        - Analyze the code diff from: {pr_info.get('diff_url')}
-        - Review for coding standards, documentation, potential bugs, and error handling
-        - Identify security concerns and performance issues
-        - Provide constructive feedback and actionable suggestions
-        
-        **PR Information:**
-        - Title: {pr_info.get('title')}
-        - Author: {pr_info.get('pr_author')}
-        - Branch: {pr_info.get('head_branch')} → {pr_info.get('base_branch')}
-        
-        Use the CodeReviewTool to fetch and analyze the PR diff. Return a detailed analysis 
-        with specific issues, suggestions, and an overall assessment.
-        """,
-        expected_output="""A comprehensive code review analysis containing:
+        Please analyze the code changes and provide:
         1. Style and formatting issues with specific line references
         2. Documentation and commenting suggestions
         3. Potential bugs and code smell identification
@@ -242,8 +85,117 @@ def create_review_task(agent: Agent, pr_info: Dict[str, Any]) -> Task:
         6. Performance optimization opportunities
         7. Positive aspects and good practices found
         8. Overall summary and recommendations
+
+        Format your response as a JSON object with the following structure:
+        {{
+          "summary": "Brief overview of the review",
+          "style_issues": [],
+          "potential_bugs": [],
+          "security_concerns": [],
+          "performance_issues": [],
+          "documentation_issues": [],
+          "positive_aspects": []
+        }}
+        """
+
+        try:
+            response = self._model.generate_content(prompt)
+            review_data = response.text
+            
+            # Clean the response to extract only the JSON part
+            json_str = review_data.strip().replace("```json", "").replace("```", "")
+            parsed_data = json.loads(json_str)
+            return parsed_data
+            
+        except (json.JSONDecodeError, Exception) as e:
+            logger.error(f"Error during AI code review: {str(e)}. Attempting to get AI-suggested fix.")
+            # If parsing fails or another error occurs, ask the AI to fix it.
+            return self._suggest_fix(diff, str(e), review_data)
+
+    def _suggest_fix(self, diff: str, error: str, raw_response: str) -> Dict[str, Any]:
+        """
+        If the initial review fails, this method asks the AI to analyze the failure
+        and suggest a fix or explanation.
+        """
+        logger.info("Attempting to get AI-suggested fix for the review failure.")
         
-        The output should be structured as a JSON object with categorized findings 
-        and actionable suggestions for each identified issue.""",
-        agent=agent
+        prompt = f"""
+        A previous AI code review attempt failed. Please analyze the error and the original code
+        to provide a helpful diagnosis.
+
+        Original Git Diff:
+        ```
+        {diff}
+        ```
+
+        Error Encountered:
+        {error}
+
+        Raw AI Response (that caused the error):
+        {raw_response}
+
+        Please provide a summary of why the review might have failed and what the core issues
+        in the code are. Format your response as a JSON object.
+        {{
+            "summary": "The code review failed, likely due to [reason]. The primary code issue seems to be [issue].",
+            "potential_bugs": ["A brief description of the likely bug causing the issue."],
+            "style_issues": [],
+            "security_concerns": [],
+            "performance_issues": [],
+            "documentation_issues": [],
+            "positive_aspects": []
+        }}
+        """
+        try:
+            response = self._model.generate_content(prompt)
+            review_data = response.text
+            json_str = review_data.strip().replace("```json", "").replace("```", "")
+            return json.loads(json_str)
+        except Exception as e:
+            logger.error(f"AI-suggested fix also failed: {str(e)}")
+            return {
+                "summary": f"The AI code review process failed twice. Initial error: {error}. Follow-up error: {str(e)}",
+                "potential_bugs": ["Unable to analyze code due to processing errors."],
+                "style_issues": [], "security_concerns": [], "performance_issues": [],
+                "documentation_issues": [], "positive_aspects": []
+            }
+
+    async def _arun(self, *args, **kwargs):
+        # For async compatibility, you can delegate to the sync version
+        # This is a simple approach; a true async implementation would use an async http client
+        raise NotImplementedError("Async execution not supported")
+
+def create_reviewer_agent(code_review_tool: CodeReviewTool) -> Agent:
+    """
+    Creates the Reviewer Agent, responsible for analyzing code changes.
+    """
+    return Agent(
+        role='Senior Software Engineer',
+        goal=(
+            'Analyze the provided code changes (git diff) for a pull request. '
+            'Identify bugs, security vulnerabilities, performance issues, and deviations from best practices. '
+            'Provide a comprehensive, professional, and constructive code review.'
+        ),
+        backstory=(
+            'You are a meticulous Senior Software Engineer with years of experience in code reviews. '
+            'You have a keen eye for detail and a deep understanding of software design principles, '
+            'security, and performance. Your reviews are always constructive, aiming to improve '
+            'code quality and mentor other developers. You are reviewing a pull request and must '
+            'provide your analysis based on the provided git diff.'
+        ),
+        tools=[code_review_tool],
+        allow_delegation=False,
+        verbose=True
+    )
+
+def create_review_task(agent: Agent, pr_info: Dict[str, Any], diff: str) -> Task:
+    """
+    Creates a task for the reviewer agent to analyze the code diff.
+    """
+    return Task(
+        description=f"Analyze the git diff for PR #{pr_info.get('number')} and provide a comprehensive code review.",
+        agent=agent,
+        expected_output="A JSON object containing the code review with keys like 'summary', 'potential_bugs', 'style_issues', etc.",
+        inputs={'pr_info': pr_info, 'diff': diff},
+        tools=[type(agent.tools[0])]
     )

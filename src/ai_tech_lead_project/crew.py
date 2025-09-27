@@ -1,3 +1,4 @@
+
 """
 AI Tech Lead - CrewAI Orchestration
 Main workflow coordinating Reviewer, Tester, and Reporter agents.
@@ -33,29 +34,16 @@ class AITechLeadCrew:
     """Main CrewAI workflow orchestrating all AI Tech Lead agents."""
     
     def __init__(self):
-        """Initialize the crew with all agents and tools."""
-        
-        # Verify required environment variables
-        required_vars = [
-            'GEMINI_API_KEY',
-            'GITHUB_APP_ID', 
-            'GITHUB_APP_PRIVATE_KEY',
-            'GITHUB_WEBHOOK_SECRET'
-        ]
-        
-        missing_vars = [var for var in required_vars if not os.getenv(var)]
-        if missing_vars:
-            raise ValueError(f"Missing required environment variables: {missing_vars}")
-        
+        """Initializes the agents and tools for the crew."""
         # Initialize tools
         self.code_review_tool = CodeReviewTool()
         self.unit_test_tool = UnitTestTool()
         self.github_report_tool = GitHubReportTool()
-        
-        # Create agents
-        self.reviewer_agent = create_reviewer_agent()
-        self.tester_agent = create_tester_agent()
-        self.reporter_agent = create_reporter_agent()
+
+        # Create agents and provide them with their respective tools
+        self.reviewer_agent = create_reviewer_agent(self.code_review_tool)
+        self.tester_agent = create_tester_agent(self.unit_test_tool)
+        self.reporter_agent = create_reporter_agent(self.github_report_tool)
         
         logger.info("AI Tech Lead Crew initialized successfully")
     

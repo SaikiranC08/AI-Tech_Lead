@@ -1,3 +1,4 @@
+
 """
 AI Tech Lead - Reporter Agent
 Formats analysis results and posts comprehensive reports to GitHub PR comments.
@@ -5,52 +6,48 @@ Formats analysis results and posts comprehensive reports to GitHub PR comments.
 
 import os
 import logging
-from typing import Dict, Any, List
+from typing import Dict, Any, List, Type
 from github import Github, Auth
 from crewai import Agent, Task
 from dotenv import load_dotenv
 import jwt
 import time
+from pydantic import BaseModel, Field, PrivateAttr
+from crewai.tools import BaseTool
 
 load_dotenv()
 logger = logging.getLogger(__name__)
 
-class GitHubReportTool:
+
+class GitHubReportSchema(BaseModel):
+    """Input schema for the GitHub Report Tool."""
+    pr_info: Dict[str, Any] = Field(..., description="Dictionary containing pull request information.")
+    review_results: Dict[str, Any] = Field(..., description="The results from the code review agent.")
+    test_results: Dict[str, Any] = Field(..., description="The results from the unit testing agent.")
+
+
+class GitHubReportTool(BaseTool):
     """Tool for posting formatted reports to GitHub PR comments."""
-    
-    def __init__(self):
+    name: str = "GitHub PR Reporter"
+    description: str = "Formats and posts a comprehensive report to a GitHub pull request."
+    args_schema: Type[BaseModel] = GitHubReportSchema
+    _app_id: str = PrivateAttr()
+    _private_key: str = PrivateAttr()
+    _webhook_secret: str = PrivateAttr()
+
+    def __init__(self, **kwargs):
         """Initialize GitHub API client with App authentication."""
-        self.app_id = os.getenv('GITHUB_APP_ID')
-        self.private_key = os.getenv('GITHUB_APP_PRIVATE_KEY')
-        
-        if not self.app_id or not self.private_key:
-            raise ValueError("GITHUB_APP_ID and GITHUB_APP_PRIVATE_KEY environment variables are required")
-        
-        # Handle private key formatting
-        if '\\n' in self.private_key:
-            self.private_key = self.private_key.replace('\\n', '\n')
+        super().__init__(**kwargs)
+        self._app_id = os.getenv('GITHUB_APP_ID')
+        self._private_key = os.getenv('GITHUB_PRIVATE_KEY')
+        self._webhook_secret = os.getenv('GITHUB_WEBHOOK_SECRET')
+        if self._private_key:
+            self._private_key = self._private_key.replace('\\n', '\n')
     
     def get_github_client(self, installation_id: int) -> Github:
-        """Get GitHub client authenticated as the app installation."""
-        
-        # Generate JWT for GitHub App
-        payload = {
-            'iat': int(time.time()),
-            'exp': int(time.time()) + 600,  # 10 minutes
-            'iss': self.app_id
-        }
-        
-        jwt_token = jwt.encode(payload, self.private_key, algorithm='RS256')
-        
-        # Get installation access token
-        auth = Auth.AppAuth(self.app_id, self.private_key)
-        gi = Github(auth=auth)
-        
-        # Get the installation and create access token
-        installation = gi.get_app_installation(installation_id)
-        installation_auth = installation.get_access_token()
-        
-        # Create client with installation token
+        """Authenticates as a GitHub App installation and returns a PyGithub client."""
+        auth = Auth.AppAuth(self._app_id, self._private_key)
+        installation_auth = auth.get_installation_auth(installation_id)
         return Github(installation_auth.token)
     
     def format_review_report(self, review_results: Dict[str, Any]) -> str:
@@ -296,7 +293,18 @@ class GitHubReportTool:
             logger.error(f"Failed to post PR comment: {e}")
             return False
 
-def create_reporter_agent() -> Agent:
+    def _run(self, pr_info: Dict[str, Any], review_results: Dict[str, Any], test_results: Dict[str, Any]) -> str:
+        """The main execution method for the tool."""
+        logger.info(f"Generating report for PR #{pr_info.get('number')}")
+        report = self.format_combined_report(review_results, test_results)
+        success = self.post_pr_comment(pr_info, report)
+        if success:
+            return f"Successfully posted report to PR #{pr_info.get('number')}."
+        else:
+            return f"Failed to post report to PR #{pr_info.get('number')}."
+
+
+def create_reporter_agent(github_report_tool: BaseTool) -> Agent:
     """Create and configure the Reporter Agent."""
     
     return Agent(
@@ -309,45 +317,43 @@ def create_reporter_agent() -> Agent:
         help developers improve their code quality efficiently.""",
         verbose=True,
         allow_delegation=False,
-        tools=[]
+        tools=[github_report_tool]
     )
 
-def create_reporting_task(agent: Agent, pr_info: Dict[str, Any]) -> Task:
-    """Create a reporting task for the Reporter Agent."""
-    
+def create_reporting_task(agent: Agent, pr_info: Dict[str, Any], context: list) -> Task:
+    """
+    Creates a task for the reporter agent to format and post the final report.
+    """
     return Task(
-        description=f"""
-        Create and publish a comprehensive analysis report for Pull Request #{pr_info.get('number')} 
-        in repository {pr_info.get('repo_name')}.
-        
-        **Task Details:**
-        - Compile results from code review and unit testing analysis
-        - Format findings into a clear, professional Markdown report
-        - Prioritize issues by severity and impact
-        - Provide actionable recommendations
-        - Post the report as a comment on the GitHub PR
-        
-        **PR Information:**
-        - Title: {pr_info.get('title')}
-        - Author: {pr_info.get('pr_author')}
-        - URL: {pr_info.get('pr_url')}
-        
-        The report should include:
-        1. Executive summary with overall assessment
-        2. Code review findings organized by category and severity
-        3. Unit testing results and coverage analysis
-        4. Specific recommendations for improvement
-        5. Recognition of good practices found in the code
-        """,
-        expected_output="""A professionally formatted Markdown report posted as a GitHub PR comment containing:
-        1. Clear executive summary indicating if action is required
-        2. Detailed breakdown of all identified issues with severity levels
-        3. Unit test generation and execution results
-        4. Specific, actionable recommendations for each issue
-        5. Professional formatting with appropriate use of emoji and styling
-        6. Successful posting to the GitHub PR as a comment
-        
-        The report should be comprehensive yet concise, helping developers understand
-        what needs attention and providing clear guidance on how to address issues.""",
-        agent=agent
+        description=f"Format the code review and test results for PR #{pr_info.get('number')} and post it to GitHub.",
+        agent=agent,
+        context=context,
+        expected_output="A confirmation message indicating the report has been posted to GitHub.",
+        inputs={
+            "pr_info": pr_info,
+            "review_results": None,  # This will be populated by the crew
+            "test_results": None     # This will be populated by the crew
+        },
+        tools=[type(agent.tools[0])]
+    )
+
+def create_report_task(agent: Agent, pr_info: Dict[str, Any], context: list) -> Task:
+    """
+    Create a task for the reporter agent to compile and format the final review report.
+    """
+    return Task(
+        description=(
+            "Compile a comprehensive code review report in Markdown format. "
+            "The report should summarize findings from the code analysis and unit testing phases. "
+            "Use the context provided from the reviewer and tester agents' tasks."
+        ),
+        expected_output=(
+            "A single, well-formatted Markdown string containing the complete review report. "
+            "The report should include sections for overall summary, positive aspects, "
+            "style issues, potential bugs, security concerns, and other relevant findings. "
+            "If unit tests were generated, include the test code in a collapsible section."
+        ),
+        agent=agent,
+        context=context,
+        inputs={'pr_info': pr_info}
     )

@@ -3,8 +3,8 @@ Result Adapter Module
 Transforms CrewAI analysis results into the format expected by the Reviewer Server.
 """
 
-import logging
 from typing import Dict, Any, List
+import logging
 
 logger = logging.getLogger(__name__)
 
@@ -30,19 +30,19 @@ class CrewAIResultAdapter:
             'performance_issues': 'performance'
         }
     
-    def transform_crew_results(self, crew_results: Dict[str, Any]) -> Dict[str, Any]:
+    def transform_crew_results(self, crew_results: Dict[str, Any], pr_info: Dict[str, Any]) -> Dict[str, Any]:
         """
         Transform CrewAI workflow results into Reviewer Server format.
         
         Args:
             crew_results: Results from CrewAI kickoff method
+            pr_info: The original pull request information.
             
         Returns:
             Dict in format expected by Reviewer Server
         """
         try:
-            # Extract PR info and results
-            pr_info = crew_results.get('pr_info', {})
+            # Extract analysis results
             review_results = crew_results.get('review_results', {})
             test_results = crew_results.get('test_results', {})
             
@@ -67,7 +67,7 @@ class CrewAIResultAdapter:
             logger.error(f"Error transforming CrewAI results: {str(e)}")
             # Return minimal payload on error
             return {
-                'pr_info': crew_results.get('pr_info', {}),
+                'pr_info': pr_info,
                 'analysis': {
                     'quality_score': 5.0,
                     'summary': f'Analysis transformation failed: {str(e)}',
@@ -100,6 +100,10 @@ class CrewAIResultAdapter:
     
     def _calculate_quality_score(self, review_results: Dict[str, Any], test_results: Dict[str, Any]) -> float:
         """Calculate a quality score based on the analysis results."""
+        
+        # If the review process itself failed, the score should be 0.
+        if "Code review failed" in review_results.get("summary", ""):
+            return 0.0
         
         # Start with base score
         score = 10.0

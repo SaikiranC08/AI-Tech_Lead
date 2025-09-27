@@ -1,7 +1,7 @@
 # AI Tech Lead - Git Ignore File
 
 # Environment variables
-.env
+.venv/gitignore/.env
 .env.local
 .env.*.local
 
@@ -53,7 +53,7 @@ coverage.xml
 cover/
 
 # Virtual environments
-.env
+.venv/gitignore/.env
 .venv
 env/
 venv/

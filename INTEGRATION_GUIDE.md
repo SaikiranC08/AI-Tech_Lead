@@ -409,15 +409,15 @@ services:
     ports:
       - "5000:5000"
     env_file:
-      - .env
-    
+      - .venv/gitignore/.env
+
   reviewer:
     build: .
-    command: python src/ai_tech_lead_project/reviewer_server.py  
+    command: python src/ai_tech_lead_project/reviewer_server.py
     ports:
       - "5001:5001"
     env_file:
-      - .env
+      - .venv/gitignore/.env
 ```
 
 ### GitHub App Configuration

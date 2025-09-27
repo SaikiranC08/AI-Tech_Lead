@@ -1,3 +1,4 @@
+
 """
 AI Tech Lead - Watcher Agent Server
 Flask webhook server that listens for GitHub App events and triggers the CrewAI workflow.
@@ -13,6 +14,8 @@ from flask import Flask, request, jsonify
 from dotenv import load_dotenv
 from crew import AITechLeadCrew
 from result_adapter import CrewAIResultAdapter
+from threading import Thread
+from typing import Dict, Any, Optional
 
 # Load environment variables
 load_dotenv()
@@ -28,11 +31,14 @@ WEBHOOK_SECRET = os.getenv('GITHUB_WEBHOOK_SECRET')
 GITHUB_APP_ID = os.getenv('GITHUB_APP_ID')
 
 # Reviewer Server configuration
-REVIEWER_SERVER_URL = os.getenv('REVIEWER_SERVER_URL', 'http://localhost:5006')
+REVIEWER_SERVER_URL = os.getenv('REVIEWER_SERVER_URL', 'http://localhost:5006/review')
 USE_REVIEWER_SERVER = os.getenv('USE_REVIEWER_SERVER', 'true').lower() == 'true'
 
 # Initialize result adapter
 result_adapter = CrewAIResultAdapter()
+
+# Initialize the Code Review Crew
+code_review_crew = AITechLeadCrew()
 
 def verify_github_signature(payload_body, signature):
     """Verify GitHub webhook signature for security."""
@@ -54,149 +60,204 @@ def verify_github_signature(payload_body, signature):
     # Compare signatures securely
     return hmac.compare_digest(signature, expected_signature)
 
-def send_to_reviewer_server(crew_results):
-    """Send CrewAI results to the Reviewer Server for GitHub review posting."""
-    if not USE_REVIEWER_SERVER:
-        logger.info("Reviewer Server integration disabled")
-        return {'success': False, 'reason': 'disabled'}
-
+def send_to_reviewer_server(crew_results, pr_info):
+    """Transforms and sends the analysis results to the reviewer server."""
     try:
-        # Transform CrewAI results to Reviewer Server format
-        reviewer_payload = result_adapter.transform_crew_results(crew_results)
+        # Adapt the raw CrewAI results into the structured format the reviewer expects
+        reviewer_payload = result_adapter.transform_crew_results(crew_results, pr_info)
 
-        # Log the outgoing payload (truncate to avoid huge logs)
+        # Log the outgoing payload
         try:
-            pretty_payload = json.dumps(reviewer_payload)
-            logger.info(f"Posting to Reviewer Server at {REVIEWER_SERVER_URL}/review; payload (truncated): {pretty_payload[:2000]}")
+            pretty_payload = json.dumps(reviewer_payload, indent=2)
+            logger.info(f"Posting to Reviewer Server at {REVIEWER_SERVER_URL}; payload (truncated):\n{pretty_payload[:2000]}")
         except Exception:
             logger.info("Posting to Reviewer Server (payload could not be serialized for logging)")
 
         # Send to Reviewer Server
         response = requests.post(
-            f"{REVIEWER_SERVER_URL}/review",
+            REVIEWER_SERVER_URL,
             json=reviewer_payload,
             headers={'Content-Type': 'application/json'},
-            timeout=30
+            timeout=60  # Increased timeout for potentially larger payloads
         )
 
-        logger.info(f"Reviewer Server responded: {response.status_code} - {response.text[:2000]}")
+        logger.info(f"Reviewer Server responded: {response.status_code} - {response.text[:500]}")
 
-        # Treat any 2xx as success
         if response.ok:
-            try:
-                result = response.json()
-            except ValueError:
-                result = {'raw_text': response.text}
-            logger.info(f"Successfully sent review to Reviewer Server: {result.get('review_id') or result.get('review_id')}")
-            return {'success': True, 'result': result}
+            return {'success': True, 'result': response.json()}
         else:
             error_msg = f"Reviewer Server error: {response.status_code} - {response.text}"
             logger.error(error_msg)
             return {'success': False, 'error': error_msg}
 
     except requests.exceptions.RequestException as e:
-        # Provide more details about connection issues
         logger.exception(f"Failed to connect to Reviewer Server at {REVIEWER_SERVER_URL}: {str(e)}")
-        error_msg = f"Failed to connect to Reviewer Server: {str(e)}"
-        return {'success': False, 'error': error_msg}
+        return {'success': False, 'error': f"Failed to connect to Reviewer Server: {str(e)}"}
     except Exception as e:
         logger.exception(f"Error sending to Reviewer Server: {str(e)}")
-        error_msg = f"Error sending to Reviewer Server: {str(e)}"
-        return {'success': False, 'error': error_msg}
+        return {'success': False, 'error': f"Error sending to Reviewer Server: {str(e)}"}
 
 
-def extract_pr_info(payload):
-    """Extract relevant PR information from GitHub webhook payload."""
+def extract_pr_info(payload: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Extracts PR information from 'pull_request' or 'check_suite' webhook payloads."""
+    event_type = payload.get('action')
+    
     try:
-        pr_data = payload.get('pull_request', {})
-        return {
-            'number': pr_data.get('number'),
-            'title': pr_data.get('title'),
-            'repo_name': payload.get('repository', {}).get('full_name'),
-            'repo_owner': payload.get('repository', {}).get('owner', {}).get('login'),
-            'repo_clone_url': payload.get('repository', {}).get('clone_url'),
-            'pr_author': pr_data.get('user', {}).get('login'),
-            'pr_url': pr_data.get('html_url'),
-            'base_branch': pr_data.get('base', {}).get('ref'),
-            'head_branch': pr_data.get('head', {}).get('ref'),
-            'head_sha': pr_data.get('head', {}).get('sha'),
-            'diff_url': pr_data.get('diff_url'),
-            'patch_url': pr_data.get('patch_url'),
-            'installation_id': payload.get('installation', {}).get('id')
-        }
-    except Exception as e:
-        logger.error(f"Error extracting PR info: {e}")
+        if 'pull_request' in payload:
+            # Handling 'pull_request' events (opened, reopened, synchronize)
+            pr = payload['pull_request']
+            repo = payload['repository']
+            
+            return {
+                'number': pr['number'],
+                'url': pr['html_url'],
+                'repo_owner': repo['owner']['login'],
+                'repo_name': repo['name'],  # Correctly use 'name'
+                'installation_id': payload.get('installation', {}).get('id'),
+                'diff_url': pr['diff_url'],
+                'clone_url': repo['clone_url'],
+                'branch': pr['head']['ref']
+            }
+            
+        elif 'check_suite' in payload and payload.get('check_suite', {}).get('pull_requests'):
+            # Handling 'check_suite' events (typically for pushes to a PR branch)
+            check_suite = payload['check_suite']
+            pr = check_suite['pull_requests'][0]  # Use the first associated PR
+            repo = payload['repository']
+            
+            return {
+                'number': pr['number'],
+                'url': f"{repo['html_url']}/pull/{pr['number']}", # Construct URL
+                'repo_owner': repo['owner']['login'],
+                'repo_name': repo['name'],  # Correctly use 'name' instead of 'full_name'
+                'installation_id': payload.get('installation', {}).get('id'),
+                'diff_url': f"{repo['html_url']}/pull/{pr['number']}.diff", # Construct diff URL
+                'clone_url': repo['clone_url'],
+                'branch': pr['head']['ref'] if 'head' in pr else None # Branch might not be in this payload
+            }
+            
+    except (KeyError, IndexError) as e:
+        logger.error(f"Failed to extract PR info from payload due to missing key: {e}")
         return None
+        
+    return None
 
-@app.route('/webhook', methods=['POST'])
-def webhook():
-    """Handle GitHub webhook events."""
-    
-    # Verify signature
-    signature = request.headers.get('X-Hub-Signature-256')
-    if not verify_github_signature(request.data, signature):
-        logger.error("Invalid webhook signature")
-        return jsonify({'error': 'Invalid signature'}), 403
-    
-    # Get event type
-    event_type = request.headers.get('X-GitHub-Event')
-    payload = request.get_json()
-    
-    logger.info(f"Received {event_type} event")
-    
-    # Only process pull request events
-    if event_type != 'pull_request':
-        return jsonify({'message': f'Event {event_type} ignored'}), 200
-    
-    # Check if it's an opened or synchronize event (new PR or updated PR)
-    action = payload.get('action')
-    if action not in ['opened', 'synchronize']:
-        return jsonify({'message': f'PR action {action} ignored'}), 200
-    
-    # Extract PR information
+
+def verify_signature(payload_body, signature_header):
+    """Verify that the payload was sent from GitHub."""
+    if not signature_header:
+        return False
+    hash_object = hmac.new(WEBHOOK_SECRET.encode('utf-8'), msg=payload_body, digestmod=hashlib.sha256)
+    expected_signature = "sha256=" + hash_object.hexdigest()
+    return hmac.compare_digest(expected_signature, signature_header)
+
+def process_pr_event(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    Processes a pull request event by extracting relevant information and
+    triggering the CrewAI workflow.
+    """
     pr_info = extract_pr_info(payload)
     if not pr_info:
-        return jsonify({'error': 'Failed to extract PR information'}), 400
-    
-    logger.info(f"Processing PR #{pr_info['number']} from {pr_info['repo_name']}")
-    
+        logger.warning("Could not extract PR info from payload.")
+        return {'success': False, 'error': 'Could not extract PR info.'}
+
+    action = payload.get('action')
+    if action not in ['opened', 'reopened', 'synchronize']:
+        logger.info(f"Ignoring PR event with action: {action}")
+        return {'success': True, 'message': f"Event action '{action}' ignored."}
+
+    logger.info(f"Processing PR #{pr_info['number']} with action '{action}'")
+
     try:
-        # Initialize and run the CrewAI workflow
-        crew = AITechLeadCrew()
-        result = crew.kickoff(inputs=pr_info)
-        
-        logger.info(f"CrewAI workflow completed for PR #{pr_info['number']}")
-        
-        # Send results to Reviewer Server for GitHub review posting
-        reviewer_result = send_to_reviewer_server(result)
-        
-        # Prepare response based on both CrewAI and Reviewer Server results
-        response_data = {
-            'message': 'PR analysis completed successfully',
-            'pr_number': pr_info['number'],
-            'status': 'success',
-            'crew_status': result.get('status', 'unknown'),
-            'reviewer_server': {
-                'enabled': USE_REVIEWER_SERVER,
-                'success': reviewer_result.get('success', False)
-            }
-        }
-        
-        # Add reviewer server details if successful
-        if reviewer_result.get('success'):
-            response_data['reviewer_server']['review_id'] = reviewer_result.get('result', {}).get('review_id')
-        elif reviewer_result.get('error'):
-            response_data['reviewer_server']['error'] = reviewer_result.get('error')
-            
-        return jsonify(response_data), 200
-        
+        # Asynchronously run the crew and send results
+        run_crew_and_send_results(pr_info)
+        return {'success': True, 'message': f"CrewAI task for PR #{pr_info['number']} started."}
     except Exception as e:
-        logger.error(f"Error processing PR #{pr_info['number']}: {str(e)}")
-        return jsonify({
-            'error': 'Failed to process PR',
-            'pr_number': pr_info['number'],
-            'details': str(e)
-        }), 500
+        logger.exception(f"Failed to start CrewAI task for PR #{pr_info['number']}: {str(e)}")
+        return {'success': False, 'error': f"Internal server error: {str(e)}"}
+
+def run_crew_and_send_results(pr_info):
+    """Runs the CrewAI workflow and sends results to reviewer server."""
+    try:
+        # Run the CrewAI workflow
+        crew_results = code_review_crew.kickoff(pr_info)
+        
+        # Send results to reviewer server
+        review_response = send_to_reviewer_server(crew_results, pr_info)
+        
+        if review_response['success']:
+            logger.info(f"Successfully sent review to Reviewer Server for PR #{pr_info['number']}")
+        else:
+            logger.error(f"Failed to send review to Reviewer Server for PR #{pr_info['number']}: {review_response['error']}")
+            
+    except Exception as e:
+        logger.exception(f"Error in crew execution for PR #{pr_info['number']}: {str(e)}")
+
+@app.route('/webhook', methods=['POST'])
+def github_webhook():
+    """
+    Listen for GitHub webhooks, filter for relevant PR events, and trigger the reviewer.
+    """
+    # Verify webhook signature for security
+    if WEBHOOK_SECRET:
+        signature = request.headers.get('X-Hub-Signature-256')
+        if not verify_signature(request.data, signature):
+            logger.warning("Invalid webhook signature.")
+            return jsonify({'error': 'Invalid signature'}), 403
+
+    event = request.headers.get('X-GitHub-Event', 'ping')
+    if event == 'ping':
+        logger.info("Received ping event from GitHub.")
+        return jsonify({'msg': 'pong'}), 200
+
+    # We are now interested in 'check_suite' as well to trigger on pushes to a PR branch
+    if event not in ['pull_request', 'check_suite']:
+        logger.info(f"Ignoring '{event}' event.")
+        return jsonify({'msg': f"Ignoring '{event}' event."}), 200
+
+    try:
+        payload = request.get_json()
+        
+        # Determine action and if we should proceed
+        action = payload.get('action')
+        if event == 'pull_request' and action not in ['opened', 'reopened', 'synchronize']:
+            logger.info(f"Ignoring pull_request action: '{action}'")
+            return jsonify({'msg': f"Ignoring PR action: '{action}'"}), 200
+        
+        if event == 'check_suite' and action != 'requested':
+             logger.info(f"Ignoring check_suite action: '{action}'")
+             return jsonify({'msg': f"Ignoring check_suite action: '{action}'"}), 200
+
+        # Extract PR info from payload (this now handles both event types)
+        pr_info = extract_pr_info(payload)
+        
+        if not pr_info:
+            logger.warning("Could not extract PR info from payload.")
+            return jsonify({'error': 'Could not extract PR information'}), 400
+
+        # Trigger the CrewAI workflow
+        logger.info(f"Starting CrewAI workflow for PR #{pr_info['number']} in {pr_info['repo_owner']}/{pr_info['repo_name']}")
+        
+        # Run the CrewAI workflow
+        crew_results = code_review_crew.kickoff(pr_info)
+        
+        # Send results to reviewer server
+        review_response = send_to_reviewer_server(crew_results, pr_info)
+        
+        if review_response['success']:
+            logger.info(f"Successfully sent review to Reviewer Server for PR #{pr_info['number']}")
+            return jsonify({
+                'status': 'review_sent',
+                'pr_number': pr_info['number'],
+                'review_id': review_response['result'].get('review_id')
+            }), 200
+        else:
+            logger.error(f"Failed to send review to Reviewer Server for PR #{pr_info['number']}: {review_response['error']}")
+            return jsonify({'error': 'Failed to send review to Reviewer Server'}), 500
+
+    except Exception as e:
+        logger.exception(f"Error processing webhook: {e}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/health', methods=['GET'])
 def health():
