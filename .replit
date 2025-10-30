@@ -1,0 +1,66 @@
+modules = ["bash", "python-3.11"]
+[agent]
+expertMode = true
+
+[nix]
+channel = "stable-25_05"
+packages = ["cargo", "libiconv", "libxcrypt", "openssl", "pkg-config", "rustc", "zip"]
+
+[workflows]
+runButton = "Project"
+
+[[workflows.workflow]]
+name = "Project"
+mode = "parallel"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "AI Tech Lead Server"
+
+[[workflows.workflow.tasks]]
+task = "workflow.run"
+args = "Reviewer Server"
+
+[[workflows.workflow]]
+name = "AI Tech Lead Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = "export PYTHONPATH=/home/runner/workspace/src:$PYTHONPATH && export GITHUB_APP_ID=123456 && export GITHUB_WEBHOOK_SECRET=development_webhook_secret && export GEMINI_API_KEY=placeholder_key && export FLASK_ENV=development && export PORT=5000 && export LOG_LEVEL=INFO && export USE_REVIEWER_SERVER=false && cd src/ai_tech_lead_project && python watcher_server.py"
+waitForPort = 5000
+
+[workflows.workflow.metadata]
+outputType = "webview"
+
+[[workflows.workflow]]
+name = "Reviewer Server"
+author = "agent"
+
+[[workflows.workflow.tasks]]
+task = "shell.exec"
+args = """
+export PYTHONPATH=/home/runner/workspace/src:$PYTHONPATH && export GITHUB_APP_ID=123456 && export GITHUB_APP_PRIVATE_KEY=\"-----BEGIN RSA PRIVATE KEY-----
+MIIBVAIBADANBgkqhkiG9w0BAQEFAASCAT4wggE6AgEAAkEAzqNpOy6k
+-----END RSA PRIVATE KEY-----\" && export REVIEWER_PORT=5001 && export FLASK_ENV=development && export LOG_LEVEL=INFO && cd src/ai_tech_lead_project && python reviewer_server.py"""
+waitForPort = 5001
+
+[workflows.workflow.metadata]
+outputType = "console"
+
+[[ports]]
+localPort = 5000
+externalPort = 80
+
+[[ports]]
+localPort = 5001
+externalPort = 3000
+
+[[ports]]
+localPort = 8000
+externalPort = 8000
+
+[deployment]
+deploymentTarget = "vm"
+run = ["gunicorn", "--bind=0.0.0.0:5000", "--reuse-port", "--timeout=300", "--workers=2", "src.ai_tech_lead_project.watcher_server:app"]

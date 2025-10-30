@@ -1,0 +1,45 @@
+You have access to my GitHub repo folder containing a Flask-based Reviewer Server project. 
+The project has these main files:
+- reviewer_server.py (main Flask app)
+- review_handler.py (logic to convert CrewAI analysis into GitHub review format)
+- github_api.py (GitHub API integration using App JWT & installation token)
+- examples/ (test payloads)
+
+My goal:
+- Automatically post code reviews to GitHub PRs using CrewAI analysis.
+- Currently, the server fails with 404 on installation token and does not push reviews to GitHub.
+
+Your task:
+1. Analyze all the code in this repo for errors that could prevent:
+   - Reviewer Server from receiving POST requests
+   - Proper JWT or GitHub installation token generation
+   - Posting review comments to GitHub
+   - Handling invalid or missing payloads
+
+2. Identify logical or syntactical errors in reviewer_server.py, review_handler.py, and github_api.py.  
+
+3. Update or suggest fixes to:
+   - Properly generate JWT from private key
+   - Fetch the correct installation token using the installation ID from the payload
+   - Handle errors gracefully with proper logging
+   - Ensure POST /review endpoint receives payload correctly
+   - Validate PR info and analysis structure
+   - Retry or log errors if GitHub API fails
+
+4. Preserve existing project structure, environment variables, and modular architecture.  
+
+5. Add any missing imports, helper functions, or small improvements required for:
+   - Posting review comments
+   - Line-specific comments
+   - Quality score evaluation (APPROVE / REQUEST_CHANGES / COMMENT logic)
+   
+6. Provide the corrected or improved code in-place in the repo files.  
+7. Leave TODO comments only where manual input (like installation ID or secret) is required.  
+8. Ensure the new code can be tested locally using the existing examples/test_reviewer_server.sh script.
+
+Extra:
+- Highlight any places that could cause network or GitHub API errors.
+- Keep code concise, clean, and properly formatted.
+- Provide a small summary of changes made for easier review.
+
+At the end, check whether the repo is now **ready to post reviews to GitHub PRs** without errors.

@@ -1,0 +1,5 @@
+crewai
+python-dotenv
+langchain-google-genai
+PyGithub
+Flask
