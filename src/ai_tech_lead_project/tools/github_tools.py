@@ -2,7 +2,6 @@ from github import Github, GithubException
 from crewai.tools import BaseTool
 from dotenv import load_dotenv
 import os
-from typing import Literal
 from pydantic import BaseModel, Field, PrivateAttr
 
 
@@ -18,19 +17,14 @@ class GithubTools(BaseTool):
     description: str = "A tool for interacting with GitHub repositories to fetch pull request diffs and post comments."
     args_schema: type[BaseModel] = GithubToolInput
 
-    # Add type annotation for the private attribute
     _github_client: Github | None = PrivateAttr(default=None)
     _enabled: bool = PrivateAttr(default=False)
 
     def __init__(self):
-        super().__init__()  # Important: call parent's __init__
-        # Load environment variables
+        super().__init__()
         load_dotenv()
-
         token = os.environ.get("GITHUB_ACCESS_TOKEN")
         if not token:
-            # Do not raise at import time; allow the project to run without GitHub integration.
-            # The tool will return an instructive message when used.
             self._github_client = None
             self._enabled = False
         else:
@@ -51,11 +45,23 @@ class GithubTools(BaseTool):
 
         if command == 'get_pr_diff':
             try:
-                # Get the comparison between base and head
                 comparison = repo.compare(pr.base.sha, pr.head.sha)
 
-                # Build a formatted diff string
                 diff_content = []
+
+                # === STRICT FILENAME MANIFEST ===
+                filenames = [f.filename for f in comparison.files]
+                diff_content.append("FILES_IN_THIS_PR:")
+                for fname in filenames:
+                    diff_content.append(f"- {fname}")
+                diff_content.append("")
+                diff_content.append("IMPORTANT: You MUST ONLY analyze the files listed above.")
+                diff_content.append("Do NOT reference, invent, or hallucinate any other files.")
+                diff_content.append("If you reference a file outside this manifest, the result is INVALID.")
+                diff_content.append("")
+
+                # === RAW DIFF WITH MARKERS ===
+                diff_content.append("RAW_DIFF_START")
                 diff_content.append(f"Comparing {pr.base.sha[:7]}...{pr.head.sha[:7]}")
                 diff_content.append(f"Files changed: {len(comparison.files)}")
                 diff_content.append("")
@@ -64,13 +70,13 @@ class GithubTools(BaseTool):
                     diff_content.append(f"--- a/{file.filename}")
                     diff_content.append(f"+++ b/{file.filename}")
                     diff_content.append(f"@@ Status: {file.status} | Changes: +{file.additions} -{file.deletions} @@")
-
-                    # Add patch content if available
                     if file.patch:
                         diff_content.append(file.patch)
                     else:
                         diff_content.append("Binary file or no patch content available")
                     diff_content.append("")
+
+                diff_content.append("RAW_DIFF_END")
 
                 return "\n".join(diff_content)
 
@@ -91,3 +97,19 @@ class GithubTools(BaseTool):
 
 # Create an instance of the tool to be used by agents
 github_tool = GithubTools()
+
+
+def get_pr_filenames(repo_name: str, pr_number: int) -> list[str]:
+    """
+    Returns list of filenames in the PR diff.
+    Standalone function used for post-run output validation.
+    """
+    if not github_tool._enabled or github_tool._github_client is None:
+        return []
+    try:
+        repo = github_tool._github_client.get_repo(repo_name)
+        pr = repo.get_pull(pr_number)
+        comparison = repo.compare(pr.base.sha, pr.head.sha)
+        return [f.filename for f in comparison.files]
+    except GithubException:
+        return []

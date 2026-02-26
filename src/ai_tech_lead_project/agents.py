@@ -34,7 +34,8 @@ def list_models():
             "top_k": 64,
             "max_temperature": 2,
             "thinking": True
-        },        "models/gemini-2.0-flash": {
+        },
+        "models/gemini-2.0-flash": {
             "version": "2.0",
             "display_name": "Gemini 2.0 Flash",
             "description": "Latest Gemini 2.0 Flash model",
@@ -71,7 +72,7 @@ def list_models():
     }
     return available_models
 
-# Modified usage example that's more relevant to your CrewAI setup
+
 def get_available_model_names():
     """Get list of available model names for CrewAI configuration"""
     models = list_models()
@@ -79,26 +80,15 @@ def get_available_model_names():
 
 
 def validate_model_compatibility(model_name):
-    """Validate if a model is compatible with CrewAI requirements.
-    Accepts both Google API-style ids (e.g., 'models/gemini-2.5-pro') and
-    LiteLLM-style ids (e.g., 'gemini/gemini-2.5-pro').
-    """
+    """Validate if a model is compatible with CrewAI requirements."""
     models = list_models()
-
-    # Build candidate keys to look up in our catalog
     core_id = model_name
     if model_name.startswith("models/"):
-        core_id = model_name[len("models/") :]
+        core_id = model_name[len("models/"):]
     if model_name.startswith("gemini/"):
-        core_id = model_name[len("gemini/") :]
+        core_id = model_name[len("gemini/"):]
 
-    candidate_keys = [
-        model_name,  # as-is
-        f"models/{core_id}",
-        f"gemini/{core_id}",
-    ]
-
-    # Find the first match in our catalog
+    candidate_keys = [model_name, f"models/{core_id}", f"gemini/{core_id}"]
     model_key = next((k for k in candidate_keys if k in models), None)
     if model_key is None:
         return False
@@ -108,9 +98,6 @@ def validate_model_compatibility(model_name):
     return all(method in model_info.get("supported_methods", []) for method in required_methods)
 
 
-# Configure the LLM once, then use it for all agents
-# Prefer env var GEMINI_MODEL; accept 'models/...' or 'gemini/...', normalize to 'gemini/<core>' for LiteLLM
-
 def _normalize_model_name(raw: str) -> str:
     core = raw
     if raw.startswith("models/"):
@@ -119,7 +106,8 @@ def _normalize_model_name(raw: str) -> str:
         core = raw[len("gemini/"):]
     return f"gemini/{core}"
 
-# Default to a stable model instead of preview
+
+# Configure LLM once at module level
 _raw_model = os.environ.get("GEMINI_MODEL", "gemini-2.5-flash").strip()
 model_name = _normalize_model_name(_raw_model)
 
@@ -127,55 +115,85 @@ if not os.environ.get("GEMINI_API_KEY"):
     raise ValueError("GEMINI_API_KEY is not set. Please set it in your environment or .env file.")
 
 if validate_model_compatibility(model_name):
-    # Fixed LLM configuration - removed explicit provider parameter
     gemini_llm = LLM(
         model=model_name,
         api_key=os.environ.get("GEMINI_API_KEY"),
         temperature=0.5,
-        # LiteLLM retry configuration to mitigate transient 5xx (e.g., Vertex 503 overloaded)
         num_retries=int(os.environ.get("LITELLM_NUM_RETRIES", "4")),
         request_timeout=int(os.environ.get("LITELLM_REQUEST_TIMEOUT", "120"))
     )
 else:
-    raise ValueError(f"Model {model_name} is not compatible with CrewAI requirements. Set GEMINI_MODEL to one of: {', '.join(get_available_model_names())}")
+    raise ValueError(f"Model {model_name} is not compatible. Set GEMINI_MODEL to one of: {', '.join(get_available_model_names())}")
 
 
-# Agents
-reviewer_agent = Agent(
-    role='Expert AI Code Reviewer',
-    goal='Perform a thorough, line-by-line code review',
-    backstory="You are a Senior Software Engineer with a meticulous eye for detail.",
-    llm=gemini_llm,
-    tools=[github_tool],
-    verbose=True,
-    allow_delegation=False
+# ============================================================
+# STRICT DIFF-ONLY CONSTRAINT (exact text as specified)
+# ============================================================
+_CRITICAL_RULE = (
+    "\n\nCRITICAL RULE:\n"
+    "You MUST analyze ONLY the files listed in the FILES_IN_THIS_PR section.\n"
+    "If a file is not listed there, you MUST ignore it.\n"
+    "Referencing any file not listed is strictly forbidden.\n"
+    "If unsure, do not assume existence of any other file."
 )
 
 
-tester_agent = Agent(
-    role='Expert Python QA Engineer',
-    goal='Generate a comprehensive suite of pytest unit tests for the given code.',
-    backstory=(
-        "You are a Quality Assurance Engineer who specializes in the pytest framework. You have a knack for identifying "
-        "edge cases and ensuring complete code coverage. You follow a strict 'generate and verify' protocol to ensure "
-        "the tests you produce are valid and executable."
-    ),
-    llm=gemini_llm,  # Pass the LLM object
-    tools=[github_tool],
-    verbose=True,
-    allow_delegation=False
-)
+def create_agents():
+    """
+    Factory function: creates FRESH agent instances for each PR run.
+    Prevents any context/memory leakage between webhook runs.
+    No global singletons. No agent reuse.
+    """
+    reviewer_agent = Agent(
+        role='Expert AI Code Reviewer',
+        goal='Perform a thorough, line-by-line code review ONLY on files present in the PR diff.',
+        backstory=(
+            "You are a Senior Software Engineer with a meticulous eye for detail. "
+            "You ONLY review the exact code changes provided in the pull request diff. "
+            "You never reference files that are not in the diff. "
+            "You never make up or hallucinate file names."
+            + _CRITICAL_RULE
+        ),
+        llm=gemini_llm,
+        tools=[github_tool],
+        verbose=True,
+        allow_delegation=False,
+        memory=False
+    )
 
+    tester_agent = Agent(
+        role='Expert Python QA Engineer',
+        goal='Generate a comprehensive suite of pytest unit tests ONLY for functions found in the PR diff.',
+        backstory=(
+            "You are a Quality Assurance Engineer who specializes in the pytest framework. "
+            "You have a knack for identifying edge cases and ensuring complete code coverage. "
+            "You follow a strict 'generate and verify' protocol. "
+            "You ONLY write tests for code that appears in the PR diff. "
+            "You never reference files that are not in the diff."
+            + _CRITICAL_RULE
+        ),
+        llm=gemini_llm,
+        tools=[github_tool],
+        verbose=True,
+        allow_delegation=False,
+        memory=False
+    )
 
-reporter_agent = Agent(
-    role='AI Tech Lead Reporter',
-    goal='Synthesize the code review and test results into a single, well-formatted Markdown report and post it to the GitHub pull request.',
-    backstory=(
-        "You are the communication hub for the AI Tech Lead team. You excel at taking complex technical data "
-        "and presenting it in a clear, concise, and actionable format for human developers."
-    ),
-    llm=gemini_llm,  # Pass the LLM object
-    tools=[github_tool],
-    verbose=True,
-    allow_delegation=False
-)
+    reporter_agent = Agent(
+        role='AI Tech Lead Reporter',
+        goal='Synthesize the code review and test results into a Markdown report and post it to the GitHub PR.',
+        backstory=(
+            "You are the communication hub for the AI Tech Lead team. "
+            "You excel at taking complex technical data and presenting it clearly. "
+            "You ONLY report on files that were present in the PR diff. "
+            "You never reference files that are not in the diff."
+            + _CRITICAL_RULE
+        ),
+        llm=gemini_llm,
+        tools=[github_tool],
+        verbose=True,
+        allow_delegation=False,
+        memory=False
+    )
+
+    return reviewer_agent, tester_agent, reporter_agent

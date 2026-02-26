@@ -2,33 +2,47 @@ from crewai import Task
 from textwrap import dedent
 from .tools.github_tools import github_tool
 
+# Exact constraint text injected into EVERY task description
+_TASK_CRITICAL_CONSTRAINT = (
+    "\n\nCRITICAL:\n"
+    "You MUST ONLY analyze files that appear in the FILES_IN_THIS_PR section.\n"
+    "Do NOT reference, invent, or hallucinate any files not listed.\n"
+    "If you reference a file outside the manifest, the result is invalid.\n"
+)
+
+
 class AITechLeadTasks():
     def review_pr_task(self, agent, repo_name, pr_number):
         return Task(
             description=dedent(f"""
+                {_TASK_CRITICAL_CONSTRAINT}
+
                 Analyze the code changes in the pull request #{pr_number} from the repository '{repo_name}'.
                 You MUST use the 'GitHub Tool' to fetch the code diff before you begin your analysis.
-                
+
                 **Follow these steps:**
                 1. Use the `get_pr_diff` command with the GitHub tool to get the code changes.
-                2. Perform a thorough, line-by-line code review on the diff.
-                3. Analyze the code against these criteria: Potential Bugs, Style & Formatting, Optimization, and Documentation.
-                4. Consolidate all findings into a single, well-formed JSON object.
+                2. Read the `FILES_IN_THIS_PR` section at the top of the output. These are the ONLY files you may analyze.
+                3. Read the code between `RAW_DIFF_START` and `RAW_DIFF_END`. This is the ONLY code to review.
+                4. Perform a thorough, line-by-line code review ONLY on the files listed in the manifest.
+                5. Analyze the code against these criteria: Potential Bugs, Style & Formatting, Optimization, and Documentation.
+                6. Consolidate all findings into a single, well-formed JSON object.
 
                 **Example of Desired JSON Output:**
                 ```json
                 {{
+                  "files_reviewed": ["calculator.py"],
                   "style_issues": [
-                    {{"line": 5, "description": "Variable 'x' is too generic. Consider renaming to 'user_count'."}}
+                    {{"file": "calculator.py", "line": 5, "description": "Variable 'x' is too generic."}}
                   ],
-                  "potential_bugs":,
-                  "documentation_issues":,
-                  "optimization_recommendations":
+                  "potential_bugs": [],
+                  "documentation_issues": [],
+                  "optimization_recommendations": []
                 }}
                 ```
                 Your final answer MUST be only the JSON object.
             """),
-            expected_output="A single JSON object containing categorized code review feedback.",
+            expected_output="A single JSON object containing categorized code review feedback ONLY for files in the PR diff.",
             agent=agent,
             tools=[github_tool],
             async_execution=True
@@ -37,20 +51,24 @@ class AITechLeadTasks():
     def test_pr_task(self, agent, repo_name, pr_number):
         return Task(
             description=dedent(f"""
+                {_TASK_CRITICAL_CONSTRAINT}
+
                 Analyze the code changes in Pull Request #{pr_number} from repository '{repo_name}'.
                 Your task is to generate a comprehensive suite of unit tests.
                 Assume the code is Python and the testing framework is pytest.
 
                 **Follow these steps:**
                 1. Use the `get_pr_diff` command with the GitHub tool to get the code changes.
-                2. Identify the new or modified functions in the diff.
-                3. For each function, write a valid, executable pytest test suite that covers the happy path, edge cases, and error conditions.
+                2. Read the `FILES_IN_THIS_PR` section. These are the ONLY files you may write tests for.
+                3. Read the code between `RAW_DIFF_START` and `RAW_DIFF_END`.
+                4. Identify the new or modified functions ONLY in the files listed in the manifest.
+                5. For each function, write a valid, executable pytest test suite that covers the happy path, edge cases, and error conditions.
 
                 Your final answer MUST be a single string containing the raw Python code for the tests.
                 If you cannot generate tests (e.g., the code is not Python or has severe syntax errors),
                 your output should be the single line: "Tests SKIPPED due to non-testable code."
             """),
-            expected_output="A string containing the raw Python code for a pytest test suite, or a skip message.",
+            expected_output="A string containing the raw Python code for a pytest test suite ONLY for files in the PR diff, or a skip message.",
             agent=agent,
             tools=[github_tool],
             async_execution=True
@@ -59,6 +77,8 @@ class AITechLeadTasks():
     def report_task(self, agent, repo_name, pr_number, context):
         return Task(
             description=dedent(f"""
+                {_TASK_CRITICAL_CONSTRAINT}
+
                 Synthesize the code review analysis and unit test results from the context into a single,
                 well-formatted Markdown report.
 
@@ -68,6 +88,9 @@ class AITechLeadTasks():
                 3.  Create a "Code Review" section with subheadings for each category of issue (e.g., ### Potential Bugs).
                 4.  Under each subheading, list the issues as bullet points.
                 5.  Create a "Unit Tests" section. If tests were generated, add `### Generated Pytest Suite` and place the test code inside a Python code block. If skipped, state the reason.
+
+                **IMPORTANT:** Only include files and issues that were present in the original PR diff.
+                Do NOT add any files or issues that were not part of the code review or test generation output.
 
                 After generating the report, use the `post_pr_comment` command with the GitHub tool to post it
                 on Pull Request #{pr_number} in repository '{repo_name}'.
