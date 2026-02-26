@@ -69,6 +69,7 @@ def webhook():
     return 'Event not processed.', 200
 
 if __name__ == '__main__':
+    port = int(os.environ.get("PORT", 8000))
     print("--- Starting Flask Server ---")
-    print("Watcher is listening for GitHub webhooks on port 5001...")
-    app.run(port=5001, debug=False)
+    print(f"Watcher is listening for GitHub webhooks on port {port}...")
+    app.run(host="0.0.0.0", port=port, debug=False)
