@@ -53,6 +53,15 @@ The system uses a streamlined multi-agent architecture powered by CrewAI:
 - **Background processing**: AI analysis runs in separate threads
 - **Consolidated reporting**: Single comprehensive report combining all analysis
 
+ ### 👨‍💻 My Contribution
+- Designed the multi-agent system architecture using CrewAI
+- Defined interaction flow between Reviewer, Tester, and Reporter agents
+- Structured GitHub webhook-based event pipeline
+- Planned integration of Gemini API for automated code analysis
+- Contributed to system modularity and scalability decisions
+
+
+
 ## 🚀 Quick Start
 
 ### Prerequisites
